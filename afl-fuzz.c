@@ -5985,7 +5985,8 @@ AFLNET_REGIONS_SELECTION:;
     goto havoc_stage;
 
   doing_det = 1;
-
+  ///////////////////////////////////////////////////////
+  //////////////////// DETERMINISTIC ////////////////////
   /*********************************************
    * SIMPLE BITFLIP (+dictionary construction) *
    *********************************************/
@@ -6944,7 +6945,8 @@ skip_extras:
   /****************
    * RANDOM HAVOC *
    ****************/
-
+  //////////////////// DETERMINISTIC ////////////////////
+  ///////////////////////////////////////////////////////
 havoc_stage:
 
   stage_cur_byte = -1;
@@ -8968,6 +8970,8 @@ int main(int argc, char** argv) {
         } else if (!strcmp(optarg, "TLS")) {
           extract_requests = &extract_requests_tls;
           extract_response_codes = &extract_response_codes_tls;
+        } else if (!strcmp(optarg, "OPCUA")) {
+          extract_requests = extract_requests_opcua;
         } else {
           FATAL("%s protocol is not supported yet!", optarg);
         }
