@@ -1032,7 +1032,7 @@ int send_over_network()
   serv_addr.sin_addr.s_addr = inet_addr(net_ip);
 
   //This piece of code is only used for targets that send responses to a specific port number
-  //The Kamailio SIP server is an example. After running this code, the intialized sockfd 
+  //The Kamailio SIP server is an example. After running this code, the intialized sockfd
   //will be bound to the given local port
   if(local_port > 0) {
     local_serv_addr.sin_family = AF_INET;
@@ -8979,6 +8979,8 @@ int main(int argc, char** argv) {
         } else if (!strcmp(optarg, "TLS")) {
           extract_requests = &extract_requests_tls;
           extract_response_codes = &extract_response_codes_tls;
+        } else if (!strcmp(optarg, "OPCUA")) {
+          extract_requests = extract_requests_opcua;
         } else if (!strcmp(optarg, "SIP")) {
           extract_requests = &extract_requests_sip;
           extract_response_codes = &extract_response_codes_sip;
