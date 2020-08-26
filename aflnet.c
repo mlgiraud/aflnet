@@ -10,6 +10,7 @@
 
 #include "alloc-inl.h"
 #include "aflnet.h"
+#include "decoders/open62541.h"
 
 // Protocol-specific functions for extracting requests and responses
 
@@ -581,7 +582,7 @@ region_t *
 extract_requests_opcua(unsigned char *buf, unsigned int buf_size, unsigned int *region_count_ref) {
     unsigned char *pos = buf;
     const unsigned char *const start = buf;
-    unsigned char *cur_start = buf;
+    unsigned char *cur_start;
     const unsigned char *const end = buf + buf_size;
 
     unsigned int region_count = 0;
@@ -592,11 +593,21 @@ extract_requests_opcua(unsigned char *buf, unsigned int buf_size, unsigned int *
         // not enough space for header
         if (pos + 8 > end)
             break;
-        uint32_t messageSize = ntohl(*((uint32_t *)pos));
+        uint32_t messageSize = 0;
+        {
+            size_t offset = 0;
+            UA_ByteString data;
+            data.data = pos;
+            data.length = end - pos;
+            UA_TcpMessageHeader hdr;
+            UA_TcpMessageHeader_decodeBinary(&data, &offset, &hdr);
+            pos += offset;
+            messageSize = hdr.messageSize;
+        }
         pos += messageSize - 8;
 
         // is the complete message contained in the buffer?
-        if (pos < end) {
+        if (pos <= end) {
             region_count++;
             regions = (region_t *)ck_realloc(regions, region_count * sizeof(region_t));
             regions[region_count - 1].start_byte = cur_start - start;
@@ -624,15 +635,61 @@ extract_requests_opcua(unsigned char *buf, unsigned int buf_size, unsigned int *
     return regions;
 }
 
-unsigned int* extract_response_codes_smtp(unsigned char* buf, unsigned int buf_size, unsigned int* state_count_ref)
-{
-  char *mem;
-  unsigned int byte_count = 0;
-  unsigned int mem_count = 0;
-  unsigned int mem_size = 1024;
-  unsigned int *state_sequence = NULL;
-  unsigned int state_count = 0;
-  char terminator[2] = {0x0D, 0x0A};
+unsigned int *
+extract_response_codes_opcua(unsigned char *buf, unsigned int buf_size, unsigned int *state_count_ref) {
+    unsigned char *pos = buf;
+    const unsigned char *const end = buf + buf_size;
+
+    unsigned int *state_sequence = NULL;
+    unsigned int state_count = 0;
+
+    // always one initial state
+    state_count++;
+    state_sequence = (unsigned int *)ck_realloc(state_sequence, state_count * sizeof(unsigned int));
+    state_sequence[state_count - 1] = 0;
+
+    while (pos < end) {
+        // not enough space for header
+        if (pos + 8 > end)
+            break;
+        uint32_t messageSize = 0;
+        uint32_t messageTypeAndChunkType = (uint32_t)-1;
+        {
+            size_t offset = 0;
+            UA_ByteString data;
+            data.data = pos;
+            data.length = end - pos;
+            UA_TcpMessageHeader hdr;
+            UA_TcpMessageHeader_decodeBinary(&data, &offset, &hdr);
+            pos += offset;
+            messageSize = hdr.messageSize;
+            messageTypeAndChunkType = hdr.messageTypeAndChunkType;
+        }
+        pos += messageSize - 8;
+
+        // is the complete message contained in the buffer?
+        if (pos <= end) {
+            state_count++;
+            state_sequence = (unsigned int *)ck_realloc(state_sequence, state_count * sizeof(unsigned int));
+            state_sequence[state_count - 1] = messageTypeAndChunkType;
+        } else {
+            break;
+        }
+    }
+
+    *state_count_ref = state_count;
+    return state_sequence;
+}
+
+unsigned int *
+extract_response_codes_smtp(unsigned char *buf, unsigned int buf_size, unsigned int *state_count_ref) {
+    char *mem;
+    unsigned int byte_count = 0;
+    unsigned int mem_count = 0;
+    unsigned int mem_size = 1024;
+    unsigned int *state_sequence = NULL;
+    unsigned int state_count = 0;
+    char terminator[2] = {0x0D, 0x0A};
 
   mem=(char *)ck_alloc(mem_size);
 
