@@ -36,6 +36,8 @@
 #include <unistd.h>
 #include <string.h>
 #include <assert.h>
+#include <semaphore.h>
+#include <fcntl.h>
 
 #include <sys/mman.h>
 #include <sys/shm.h>
@@ -59,6 +61,10 @@
 
 u8  __afl_area_initial[MAP_SIZE];
 u8* __afl_area_ptr = __afl_area_initial;
+
+int stateful_shm_fd = -1;
+sem_t* loop_once = NULL;
+sem_t* is_paused = NULL;
 
 __thread u32 __afl_prev_loc;
 
@@ -93,6 +99,15 @@ static void __afl_map_shm(void) {
 
     __afl_area_ptr[0] = 1;
 
+  }
+  u8* sf_str = getenv(STATEFUL_SHM_ENV_VAR);
+  if(sf_str) {
+      stateful_shm_fd = shm_open(STATEFUL_SHM_NAME, O_RDWR, 0600);
+      if(stateful_shm_fd < 0) _exit(1);
+      loop_once = mmap(NULL, 2 * sizeof(sem_t), PROT_WRITE | PROT_READ, MAP_SHARED, stateful_shm_fd, 0);
+      if(loop_once == NULL) _exit(1);
+      is_paused = loop_once + 1;
+      if(is_paused == NULL) _exit(1);
   }
 
 }
@@ -176,6 +191,23 @@ static void __afl_start_forkserver(void) {
 
   }
 
+}
+
+/**
+ * This function can be injected into the fuzzed program in the main loop of a stateful program.
+ * It serves as a kind of checkpoint such that the fuzzer can clear the trace map at a specified point,
+ * in order to gather deterministic traces of the last fuzzed input of a chain of inputs.
+ * @return
+ */
+void __afl_stateful_main_loop_injection(void) {
+
+    // Signal afl that we are about to pause.
+    sem_post(is_paused);
+    // Wait for afl to signal to continue one loop execution.
+    sem_wait(loop_once);
+//    while(*loop_once);
+//    *is_paused = 0;
+//    pause();
 }
 
 

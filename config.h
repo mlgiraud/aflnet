@@ -278,6 +278,9 @@
 
 #define SHM_ENV_VAR         "__AFL_SHM_ID"
 
+#define STATEFUL_SHM_NAME   "/__AFL_STATEFUL_SHM"
+#define STATEFUL_SHM_ENV_VAR "__AFL_STATEFUL_SHM"
+
 /* Other less interesting, internal-only variables. */
 
 #define CLANG_ENV_VAR       "__AFL_CLANG_MODE"
@@ -289,6 +292,7 @@
 
 #define PERSIST_SIG         "##SIG_AFL_PERSISTENT##"
 #define DEFER_SIG           "##SIG_AFL_DEFER_FORKSRV##"
+#define MAIN_INJECT_SIG     "##SIG_AFL_MAIN_INJECT##"
 
 /* Distinctive bitmap signature used to indicate failed execution: */
 

@@ -56,6 +56,7 @@
 #include <termios.h>
 #include <dlfcn.h>
 #include <sched.h>
+#include <semaphore.h>
 
 #include <sys/wait.h>
 #include <sys/time.h>
@@ -150,6 +151,11 @@ static s32 forksrv_pid,               /* PID of the fork server           */
            out_dir_fd = -1;           /* FD of the lock file              */
 
 EXP_ST u8* trace_bits;                /* SHM with instrumentation bitmap  */
+
+int stateful_shm_fd = -1;
+static sem_t* loop_once = NULL;               /* SHM with semaphore to synchronize with the target  */
+static sem_t* is_paused = NULL;           /* SHM with semaphore to signal that the program is paused  */
+//static sem_t* pause_mutex = NULL;
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
@@ -408,6 +414,21 @@ kliter_t(lms) *M2_prev, *M2_next;
 //Function pointers pointing to Protocol-specific functions
 unsigned int* (*extract_response_codes)(unsigned char* buf, unsigned int buf_size, unsigned int* state_count_ref) = NULL;
 region_t* (*extract_requests)(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref) = NULL;
+
+//#define UNPAUSE() do {         \
+//    *do_pause = 0;         \
+//    while(*is_paused == 1)     \
+//        *do_pause = 0;         \
+//} while(0)
+#define UNPAUSE()
+
+//#define PAUSE() do { \
+//    while(*is_paused == 0)      \
+//        *do_pause = 1;          \
+//    } while(0)
+
+#define PAUSE()
+
 
 /* Initialize the implemented state machine as a graphviz graph */
 void setup_ipsm()
@@ -782,9 +803,9 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
 
       for(i=1; i < state_count; i++) {
         unsigned int curStateID = state_sequence[i];
-        char fromState[10], toState[10];
-        sprintf(fromState, "%d", prevStateID);
-        sprintf(toState, "%d", curStateID);
+        char fromState[12], toState[12];
+        snprintf(fromState, 12, "%d", prevStateID);
+        snprintf(toState, 12, "%d", curStateID);
 
         //Check if the prevStateID and curStateID have been added to the state machine as vertices
         //Check also if the edge prevStateID->curStateID has been added
@@ -994,7 +1015,6 @@ int send_over_network()
 
   //Clean up the server if needed
   if (cleanup_script) system(cleanup_script);
-
   //Wait a bit for the server initialization
   usleep(server_wait_usecs);
 
@@ -1038,6 +1058,7 @@ int send_over_network()
     //If it cannot connect to the server under test
     //try it again as the server initial startup time is varied
     for (n=0; n < 1000; n++) {
+        // TODO: Might need to allow the server to loop a few times for connecting
       if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == 0) break;
       usleep(1000);
     }
@@ -1053,9 +1074,14 @@ int send_over_network()
   //write the request messages
   kliter_t(lms) *it;
   messages_sent = 0;
+  // pause so we have deterministic starting point for the first send/receive
+  PAUSE();
 
   for (it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
+    UNPAUSE(); // unpause now to let the target receive
     n = net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
+    sem_wait(is_paused);
+    sem_post(loop_once);
     messages_sent++;
 
     //Allocate memory to store new accumulated response buffer size
@@ -1068,8 +1094,17 @@ int send_over_network()
 
     //retrieve server response
     u32 prev_buf_size = response_buf_size;
-    if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
-      goto HANDLE_RESPONSES;
+    u32  wait_times = 0;
+    // run targets main loop once and wait for response. repeat until either a response was received, or we waited 50 ms
+    while(response_buf_size == prev_buf_size && wait_times < poll_wait_msecs * 50) {
+        if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
+            goto HANDLE_RESPONSES;
+        }
+        if(response_buf_size == prev_buf_size) {
+            sem_wait(is_paused);
+            sem_post(loop_once);
+        }
+        ++wait_times;
     }
 
     //Update accumulated response buffer size
@@ -1103,9 +1138,12 @@ HANDLE_RESPONSES:
 
   //give the server a bit more time to gracefully terminate
   while(1) {
+      sem_post(loop_once);
     int status = kill(child_pid, 0);
     if ((status != 0) && (errno == ESRCH)) break;
   }
+
+  while(!sem_trywait(loop_once)); // reset to zero
 
   return 0;
 }
@@ -2038,7 +2076,10 @@ static inline void classify_counts(u32* mem) {
 
 static void remove_shm(void) {
 
+  shm_unlink(STATEFUL_SHM_NAME);
   shmctl(shm_id, IPC_RMID, NULL);
+  if(stateful_shm_fd > 0)
+    close(stateful_shm_fd);
 
 }
 
@@ -2195,10 +2236,21 @@ EXP_ST void setup_shm(void) {
   memset(virgin_crash, 255, MAP_SIZE);
 
   shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
-
   if (shm_id < 0) PFATAL("shmget() failed");
 
   atexit(remove_shm);
+
+  stateful_shm_fd = shm_open(STATEFUL_SHM_NAME, O_RDWR | O_CREAT | O_EXCL, 0600);
+  if(stateful_shm_fd < 0) PFATAL("shm_open failed");
+  setenv(STATEFUL_SHM_ENV_VAR, "using", 1);
+  ftruncate(stateful_shm_fd, 2 * sizeof(sem_t));
+    loop_once = mmap(NULL, 2 * sizeof(sem_t), PROT_WRITE | PROT_READ, MAP_SHARED, stateful_shm_fd, 0);
+    if(loop_once == NULL) PFATAL("could not map pause var");
+    if(sem_init(loop_once, 1, 0)) PFATAL("Failed to init semaphore");
+
+    is_paused = loop_once + 1;
+    if(is_paused == NULL) PFATAL("could not map semaphore");
+    if(sem_init(is_paused, 1, 0)) PFATAL("Failed to init semaphore");
 
   shm_str = alloc_printf("%d", shm_id);
 
@@ -3240,7 +3292,8 @@ static u8 run_target(char** argv, u32 timeout) {
   it.it_value.tv_sec = (timeout / 1000);
   it.it_value.tv_usec = (timeout % 1000) * 1000;
 
-  setitimer(ITIMER_REAL, &it, NULL);
+  // TODO: Enable. Disabled for debugging
+//  setitimer(ITIMER_REAL, &it, NULL);
 
   /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
 
@@ -3281,6 +3334,12 @@ static u8 run_target(char** argv, u32 timeout) {
   MEM_BARRIER();
 
   tb4 = *(u32*)trace_bits;
+    {
+        FILE *f = fopen("map2.bin", "wb");
+        fwrite(trace_bits, 1, MAP_SIZE, f);
+        u32 h = hash32(trace_bits, MAP_SIZE, 0);
+        fclose(f);
+    }
 
 #ifdef WORD_SIZE_64
   classify_counts((u64*)trace_bits);

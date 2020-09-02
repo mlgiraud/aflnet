@@ -106,7 +106,7 @@ static void edit_params(u32 argc, char** argv) {
   u8 fortify_set = 0, asan_set = 0, x_set = 0, maybe_linking = 1, bit_mode = 0;
   u8 *name;
 
-  cc_params = ck_alloc((argc + 128) * sizeof(u8*));
+  cc_params = ck_alloc((argc + 130) * sizeof(u8*));
 
   name = strrchr(argv[0], '/');
   if (!name) name = argv[0]; else name++;
@@ -279,6 +279,13 @@ static void edit_params(u32 argc, char** argv) {
 #endif /* ^__APPLE__ */
     "_I(); } while (0)";
 
+    cc_params[cc_par_cnt++] = "-D__AFL_stateful_main_loop_injection()="
+      "do { static volatile char *_C __attribute__((used)); "
+      " _C = (char*)\"" MAIN_INJECT_SIG "\"; "
+      "__attribute__((visibility(\"default\"))) "
+      "void _X(void) __asm__(\"__afl_stateful_main_loop_injection\"); "
+      "_X(); } while (0)";
+
   if (maybe_linking) {
 
     if (x_set) {
@@ -311,6 +318,8 @@ static void edit_params(u32 argc, char** argv) {
     }
 
   }
+
+  cc_params[cc_par_cnt++] = "-lrt";
 
   cc_params[cc_par_cnt] = NULL;
 
