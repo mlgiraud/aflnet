@@ -611,7 +611,7 @@ extract_requests_opcua(unsigned char *buf, unsigned int buf_size, unsigned int *
             region_count++;
             regions = (region_t *)ck_realloc(regions, region_count * sizeof(region_t));
             regions[region_count - 1].start_byte = cur_start - start;
-            regions[region_count - 1].end_byte = pos - start;
+            regions[region_count - 1].end_byte = pos - start - 1;
             regions[region_count - 1].state_sequence = NULL;
             regions[region_count - 1].state_count = 0;
         } else {
@@ -637,8 +637,8 @@ extract_requests_opcua(unsigned char *buf, unsigned int buf_size, unsigned int *
 
 unsigned int *
 extract_response_codes_opcua(unsigned char *buf, unsigned int buf_size, unsigned int *state_count_ref) {
-    unsigned char *pos = buf;
-    const unsigned char *const end = buf + buf_size;
+    unsigned char* pos = buf;
+    unsigned char* const end = buf + buf_size;
 
     unsigned int *state_sequence = NULL;
     unsigned int state_count = 0;
@@ -660,10 +660,14 @@ extract_response_codes_opcua(unsigned char *buf, unsigned int buf_size, unsigned
             data.data = pos;
             data.length = end - pos;
             UA_TcpMessageHeader hdr;
-            UA_TcpMessageHeader_decodeBinary(&data, &offset, &hdr);
-            pos += offset;
-            messageSize = hdr.messageSize;
-            messageTypeAndChunkType = hdr.messageTypeAndChunkType;
+            if (UA_TcpMessageHeader_decodeBinary(&data, &offset, &hdr) != UA_STATUSCODE_GOOD) {
+                pos = end;
+            } else {
+                pos += offset;
+                messageSize = hdr.messageSize;
+                messageTypeAndChunkType = hdr.messageTypeAndChunkType;
+            }
+
         }
         pos += messageSize - 8;
 
