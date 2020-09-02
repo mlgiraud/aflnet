@@ -151,6 +151,7 @@ static s32 forksrv_pid,               /* PID of the fork server           */
            out_dir_fd = -1;           /* FD of the lock file              */
 
 EXP_ST u8* trace_bits;                /* SHM with instrumentation bitmap  */
+u8* trace_before_last_msg;
 
 int stateful_shm_fd = -1;
 static sem_t* loop_once = NULL;               /* SHM with semaphore to synchronize with the target  */
@@ -414,22 +415,6 @@ kliter_t(lms) *M2_prev, *M2_next;
 //Function pointers pointing to Protocol-specific functions
 unsigned int* (*extract_response_codes)(unsigned char* buf, unsigned int buf_size, unsigned int* state_count_ref) = NULL;
 region_t* (*extract_requests)(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref) = NULL;
-
-//#define UNPAUSE() do {         \
-//    *do_pause = 0;         \
-//    while(*is_paused == 1)     \
-//        *do_pause = 0;         \
-//} while(0)
-#define UNPAUSE()
-
-//#define PAUSE() do { \
-//    while(*is_paused == 0)      \
-//        *do_pause = 1;          \
-//    } while(0)
-
-#define PAUSE()
-
-
 /* Initialize the implemented state machine as a graphviz graph */
 void setup_ipsm()
 {
@@ -1074,13 +1059,17 @@ int send_over_network()
   //write the request messages
   kliter_t(lms) *it;
   messages_sent = 0;
-  // pause so we have deterministic starting point for the first send/receive
-  PAUSE();
 
   for (it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
-    UNPAUSE(); // unpause now to let the target receive
     n = net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
     sem_wait(is_paused);
+    MEM_BARRIER();
+    if(kl_end(kl_messages) == kl_next(it)) {
+        // If the message is the last message to be sent, we want to collect the coverage produced for just this message
+        // Save the current trace bits state, so we can calculate the difference later on
+        memcpy(trace_before_last_msg, trace_bits, MAP_SIZE);
+    }
+    MEM_BARRIER();
     sem_post(loop_once);
     messages_sent++;
 
@@ -1101,7 +1090,13 @@ int send_over_network()
             goto HANDLE_RESPONSES;
         }
         if(response_buf_size == prev_buf_size) {
-            sem_wait(is_paused);
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_sec += 1;
+            if(sem_timedwait(is_paused, &ts) == -1) {
+                likely_buggy = 1;
+                goto HANDLE_RESPONSES; // Timed out.
+            }
             sem_post(loop_once);
         }
         ++wait_times;
@@ -2267,6 +2262,9 @@ EXP_ST void setup_shm(void) {
 
   if (!trace_bits) PFATAL("shmat() failed");
 
+  trace_before_last_msg = ck_alloc(MAP_SIZE);
+  if(!trace_before_last_msg) PFATAL("Could not allocate trace_before_last_msg");
+
 }
 
 
@@ -3178,6 +3176,7 @@ static u8 run_target(char** argv, u32 timeout) {
      territory. */
 
   memset(trace_bits, 0, MAP_SIZE);
+  memset(trace_before_last_msg, 0, MAP_SIZE);
   MEM_BARRIER();
 
   /* If we're running in "dumb" mode, we can't rely on the fork server
@@ -3293,7 +3292,7 @@ static u8 run_target(char** argv, u32 timeout) {
   it.it_value.tv_usec = (timeout % 1000) * 1000;
 
   // TODO: Enable. Disabled for debugging
-//  setitimer(ITIMER_REAL, &it, NULL);
+  setitimer(ITIMER_REAL, &it, NULL);
 
   /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
 
@@ -3333,12 +3332,20 @@ static u8 run_target(char** argv, u32 timeout) {
 
   MEM_BARRIER();
 
+  // Update trace_before_last_msg to conntain the diff to after the program ended
+  for(size_t i = 0; i < MAP_SIZE; ++i) {
+      trace_before_last_msg[i] = trace_bits[i] - trace_before_last_msg[i];
+  }
+
+  // TODO: Use the diff to classify the states of the program.
+  // TODO: This should replace the current aflnet state id. (Should be possible to simply swap in?)
+
   tb4 = *(u32*)trace_bits;
     {
-        FILE *f = fopen("map2.bin", "wb");
-        fwrite(trace_bits, 1, MAP_SIZE, f);
-        u32 h = hash32(trace_bits, MAP_SIZE, 0);
-        fclose(f);
+//        FILE *f = fopen("map2.bin", "wb");
+//        fwrite(trace_before_last_msg, 1, MAP_SIZE, f);
+        u32 h = hash32(trace_before_last_msg, MAP_SIZE, 0);
+//        fclose(f);
     }
 
 #ifdef WORD_SIZE_64
