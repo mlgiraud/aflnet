@@ -73,7 +73,7 @@ afl-fuzz: afl-fuzz.c $(COMM_HDR) aflnet.o aflnet.h decoders/open62541.h | test_x
 	$(CC) $(CFLAGS) $@.c aflnet.o decoders/open62541.c -o $@ $(LDFLAGS)
 
 afl-replay: afl-replay.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
-	$(CC) $(CFLAGS) $@.c aflnet.o -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) $@.c aflnet.o decoders/open62541.c -o $@ $(LDFLAGS)
 
 aflnet-replay: aflnet-replay.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
 	$(CC) $(CFLAGS) $@.c aflnet.o decoders/open62541.c -o $@ $(LDFLAGS)
